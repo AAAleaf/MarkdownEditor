@@ -274,7 +274,8 @@ void CMainFrame::OnFormatCommand(UINT nID)
 		case ID_FORMAT_CODE:      WrapSelection(_T("`"),  _T("`"));      break;
 		case ID_FORMAT_STRIKE:    WrapSelection(_T("~~"), _T("~~"));     break;
 		case ID_FORMAT_LINK:      InsertAtCaret(_T("[链接文字](https://)"), 9, 1); break;
-		// 用相对路径 image.png 作为占位，避免 https:// 空地址触发 IE 加载/安全异常导致崩溃
-		case ID_FORMAT_IMAGE:     InsertAtCaret(_T("![图片描述](image.png)"), 9, 1); break;
+		// 用 data: URI 内联占位图：不触发 IE 任何文件/网络加载，彻底避免“插入图片即崩溃”
+		// 用户把整段 data:... 替换成自己的相对/绝对图片路径即可；replaceImgSrc 会把它解析到文档所在目录
+		case ID_FORMAT_IMAGE:     InsertAtCaret(_T("![图片描述](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAAYCAIAAADF1mwTAAAAPUlEQVR42u3YQQ0AIAwAselEE+omAhF7YYKEbGlyBvq9WDtbF0MAeapdAAAAAAAAAAAAAAAAAAAvAK7Ety4snOSzESSKyAAAAABJRU5ErkJggg==)"), 0, 0); break;
 	}
 }
