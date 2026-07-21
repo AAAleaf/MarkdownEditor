@@ -122,7 +122,3 @@ jobs:
         with:
           name: MarkdownEditor-${{ github.event.inputs.platform || 'x64' }}
           path: "**/MarkdownEditor.exe"
-
-        with:
-          name: MarkdownEditor-${{ github.event.inputs.platform || 'x64' }}
-          path: src/**/MarkdownEditor.exe
