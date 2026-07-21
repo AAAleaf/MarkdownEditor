@@ -124,8 +124,23 @@ void CMarkdownEditorView::InitializeWebView()
 		nullptr, nullptr, nullptr,
 		Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
 			[this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
-				if (FAILED(result) || env == nullptr)
-					return result;   // 没有 WebView2 运行时：预览不可用，但不崩溃
+				if (FAILED(result) || env == nullptr) {
+					// WebView2 初始化失败（多半是本机没装 WebView2 运行时，或 exe 旁边缺 WebView2Loader.dll）。
+					// 之前是静默返回，导致预览一片空白且无任何提示；这里给出明确弹窗。
+					static bool warned = false;
+					if (!warned) {
+						warned = true;
+						AfxMessageBox(
+							_T("预览面板无法初始化 Microsoft Edge WebView2（Chromium 内核）。\n")
+							_T("常见原因：\n")
+							_T("  1. 本机未安装 WebView2 运行时；\n")
+							_T("  2. MarkdownEditor.exe 旁边缺少 WebView2Loader.dll。\n\n")
+							_T("请安装 WebView2 运行时（或确保 WebView2Loader.dll 与 exe 同目录）后重新打开本程序：\n")
+							_T("https://developer.microsoft.com/zh-cn/microsoft-edge/webview2/"),
+							MB_ICONINFORMATION);
+					}
+					return result;
+				}
 				m_environment = env;
 				env->CreateCoreWebView2Controller(
 					GetSafeHwnd(),
@@ -168,12 +183,15 @@ void CMarkdownEditorView::InitializeWebView()
 							GetClientRect(&rc);
 							controller->put_Bounds(rc);
 
-							// 渲染之前缓存的 HTML
-							if (!m_pendingHtml.IsEmpty()) {
-								CStringW html = m_pendingHtml;
-								m_pendingHtml.Empty();
+							// 渲染：优先用就绪前缓存的 HTML；
+							// 若为空（例如 OnUpdate 在 WebView2 就绪前没触发过），则直接用“当前文档内容”渲染，
+							// 避免“打开文件后预览一直是空白”的情况。
+							CStringW html = m_pendingHtml;
+							m_pendingHtml.Empty();
+							if (html.IsEmpty() && GetDocument())
+								html = Utf8ToWide(GetMdHtml(GetDocument()->getText()));
+							if (!html.IsEmpty())
 								m_webView->NavigateToString(html);
-							}
 							return S_OK;
 						}).Get());
 				return S_OK;
