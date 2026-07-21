@@ -102,14 +102,27 @@ jobs:
         shell: cmd
         run: msbuild src/MarkdownEditor.sln /p:Configuration=Release /p:Platform=${{ github.event.inputs.platform || 'x64' }} /p:WindowsTargetPlatformVersion=${{ steps.sdk.outputs.version }} /m
 
+      # exe 实际落在仓库根目录的 download/（vcxproj 的 OutputFile=..\download\），
+      # 故这里在整个仓库递归查找，而不是只搜 src/。
       - name: Show result
         shell: pwsh
         run: |
-          $exe = Get-ChildItem src -Recurse -Filter MarkdownEditor.exe | Select-Object -First 1
-          if ($exe) { Write-Host "Built: $($exe.FullName) ($([math]::Round($exe.Length/1KB)) KB)" } else { Write-Error "MarkdownEditor.exe not found!" }
+          $exe = Get-ChildItem -Path . -Recurse -Filter MarkdownEditor.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) {
+            Write-Host "Built: $($exe.FullName) ($([math]::Round($exe.Length/1KB)) KB)"
+          } else {
+            Write-Host "## MarkdownEditor.exe not found anywhere. Candidate files:"
+            Get-ChildItem -Path . -Recurse -Include *.exe,*.log -ErrorAction SilentlyContinue |
+              Select-Object FullName, Length | Format-Table -AutoSize
+            Write-Error "MarkdownEditor.exe not found!"
+          }
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
+        with:
+          name: MarkdownEditor-${{ github.event.inputs.platform || 'x64' }}
+          path: "**/MarkdownEditor.exe"
+
         with:
           name: MarkdownEditor-${{ github.event.inputs.platform || 'x64' }}
           path: src/**/MarkdownEditor.exe
