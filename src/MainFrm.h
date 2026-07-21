@@ -1,10 +1,11 @@
 
-// MainFrm.h : CMainFrame ÀàµÄ½Ó¿Ú
+// MainFrm.h : CMainFrame ç±»çš„æ¥å£
 //
 
 #pragma once
 #include "MySplitterWnd.h"
 class CMarkdownEditorView;
+class CLeftView;
 
 class CMainFrame : public CFrameWnd
 {
@@ -12,24 +13,24 @@ private:
 	bool _bInited;
 	bool _bShowLeft;
 	
-protected: // ½ö´ÓĞòÁĞ»¯´´½¨
+protected: // ä»…ä»åºåˆ—åŒ–åˆ›å»º
 	CMainFrame();
 	DECLARE_DYNCREATE(CMainFrame)
 
-// ÌØĞÔ
+// ç‰¹æ€§
 protected:
 	CMySplitterWnd m_wndSplitter;
 public:
 
-// ²Ù×÷
+// æ“ä½œ
 public:
 
-// ÖØĞ´
+// é‡å†™
 public:
 	virtual BOOL OnCreateClient(LPCREATESTRUCT lpcs, CCreateContext* pContext);
 	virtual BOOL PreCreateWindow(CREATESTRUCT& cs);
 
-// ÊµÏÖ
+// å®ç°
 public:
 	virtual ~CMainFrame();
 	CMarkdownEditorView* GetRightPane();
@@ -38,15 +39,21 @@ public:
 	virtual void Dump(CDumpContext& dc) const;
 #endif
 
-protected:  // ¿Ø¼şÌõÇ¶Èë³ÉÔ±
+protected:  // æ§ä»¶æ¡åµŒå…¥æˆå‘˜
 	CStatusBar        m_wndStatusBar;
 
-// Éú³ÉµÄÏûÏ¢Ó³Éäº¯Êı
+// ç”Ÿæˆçš„æ¶ˆæ¯æ˜ å°„å‡½æ•°
 protected:
 	afx_msg int OnCreate(LPCREATESTRUCT lpCreateStruct);
 	DECLARE_MESSAGE_MAP()
 private:
 	void switchViewer(bool enable);
+
+	CLeftView* GetLeftView();
+	void InsertAtCaret(const CString& text, int selStartRel, int selEndRel);
+	void WrapSelection(const CString& prefix, const CString& suffix);
+	void PrefixCurrentLine(const CString& prefix);
+
 public:
 	afx_msg void OnSize(UINT nType, int cx, int cy);
 	afx_msg void OnSwitch();
