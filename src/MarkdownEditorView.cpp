@@ -217,23 +217,55 @@ static string DirOfPath(const string& filePath)
 	return filePath.substr(0, pos + 1);
 }
 
+// 把本地路径规范成 file:/// URL（正斜杠）。CHtmlView(IE) 从一个 about:blank 文档里
+// 加载“裸的 C:\xxx 路径（无协议头）”会按非法 URL 处理并访问异常 → 崩溃；
+// 改成 file:///C:/xxx 这种 IE 能稳定加载的形式即可避免。
+static string ToFileUrl(const string& localPath)
+{
+	// 已经是 URL / 网络图 / 内联图 / 已经是 file:// 则原样返回
+	if (localPath.compare(0, 7, "http://") == 0 ||
+	    localPath.compare(0, 8, "https://") == 0 ||
+	    localPath.compare(0, 5, "data:") == 0 ||
+	    localPath.compare(0, 7, "file://") == 0)
+		return localPath;
+
+	string p = localPath;
+	for (size_t i = 0; i < p.size(); ++i)
+		if (p[i] == '\\') p[i] = '/';   // 反斜杠统一成正斜杠
+
+	if (!p.empty() && p[0] == '/')      // 类 unix 绝对路径：file:///xxx
+		return string("file://") + p;
+	return string("file:///") + p;       // Windows 路径：file:///C:/xxx
+}
+
 string&  replaceImgSrc(string& str, string path)
 {
-	// 拼“文档所在目录”，而不是把 .md 文件全路径直接挂在图片名前
-	//（旧逻辑会得到 C:\x\doc.mdimage.png 这种畸形路径，IE 加载非法 file:// 时容易访问异常 → 程序崩溃）
 	string dir = DirOfPath(path);
-	if (dir.size() == 0)
-		return str;
 	string old_value = "<img src=\"";
-	string new_value = "<img src=\"" + dir;
 	for (string::size_type pos(0); pos != string::npos; pos += old_value.length())   {
 		if ((pos = str.find(old_value, pos)) != string::npos){
 			const char* start = str.c_str() + pos + old_value.length();
-			// 跳过 http(s):// 网络图 与 data: 内联占位图，这两种不需要拼本地目录
-			if (strnicmp(start, "http://", 7) != 0 && strnicmp(start, "https://", 8) != 0 && strnicmp(start, "data:", 5) != 0)
-				str.replace(pos, old_value.length(), new_value);
+			// 网络图 / 内联图 / 已经是 file:// 的，原样保留
+			if (strnicmp(start, "http://", 7) == 0 ||
+			    strnicmp(start, "https://", 8) == 0 ||
+			    strnicmp(start, "data:", 5) == 0 ||
+			    strnicmp(start, "file://", 7) == 0)
+				continue;
+
+			// 取出当前图片路径（到下一个引号为止）
+			string local = start;
+			size_t q = local.find('\"');
+			if (q != string::npos) local = local.substr(0, q);
+
+			// 相对路径才拼文档目录；带盘符的绝对路径（含 ':'）直接用，避免拼出畸形路径
+			if (dir.size() && !local.empty() && local[0] != '/' && local.find(':') == string::npos)
+				local = dir + local;
+
+			string newUrl = ToFileUrl(local);
+			string new_value = "<img src=\"" + newUrl;
+			str.replace(pos, old_value.length(), new_value);
 		}
-		else   
+		else
 			break;
 	}
 	return   str;
