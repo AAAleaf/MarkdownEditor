@@ -34,6 +34,8 @@ IMPLEMENT_DYNCREATE(CMainFrame, CFrameWnd)
 		ON_WM_SIZE()
 		ON_COMMAND(IDM_SWITCH, &CMainFrame::OnSwitch)
 		ON_COMMAND(IDM_ABOUT, &CMainFrame::OnAbout)
+		ON_COMMAND_RANGE(ID_PARA_H1, ID_PARA_OL, &CMainFrame::OnParaCommand)
+		ON_COMMAND_RANGE(ID_FORMAT_BOLD, ID_FORMAT_IMAGE, &CMainFrame::OnFormatCommand)
 	END_MESSAGE_MAP()
 
 	static UINT indicators[] =
@@ -175,3 +177,84 @@ IMPLEMENT_DYNCREATE(CMainFrame, CFrameWnd)
 		}
 		s_bShowAbout = !s_bShowAbout;
 	}
+
+
+
+
+//=========== 新增：段落 / 格式 菜单功能 ===========
+CLeftView* CMainFrame::GetLeftView()
+{
+	return dynamic_cast<CLeftView*>(m_wndSplitter.GetPane(0,0));
+}
+
+// 在当前光标处插入文本；selStartRel/selEndRel 为“距插入文本末尾的字符数”，
+// 用于把光标/选区定位到插入文本内部（例如超链接里选中 URL，让你直接改）。
+void CMainFrame::InsertAtCaret(const CString& text, int selStartRel, int selEndRel)
+{
+	CLeftView* pLeft = GetLeftView();
+	if(!pLeft) return;
+	CRichEditCtrl& edit = pLeft->GetRichEditCtrl();
+	edit.ReplaceSel(text, TRUE);
+	long ns, ne; edit.GetSel(ns, ne); // 插入后选区收拢到文本末尾
+	long a = ns - selStartRel; if(a < 0) a = 0;
+	long b = ns - selEndRel;   if(b < 0) b = 0;
+	edit.SetSel(a, b);
+	edit.SetFocus();
+}
+
+// 用 prefix/suffix 包裹当前选区；无选区则只在光标处插入标记并把光标放在中间
+void CMainFrame::WrapSelection(const CString& prefix, const CString& suffix)
+{
+	CLeftView* pLeft = GetLeftView();
+	if(!pLeft) return;
+	CRichEditCtrl& edit = pLeft->GetRichEditCtrl();
+	CString sel;
+	edit.GetSelText(sel);
+	CString ins = prefix + sel + suffix;
+	edit.ReplaceSel(ins, TRUE);
+	long ns, ne; edit.GetSel(ns, ne); // ns == ne == 插入文本末尾
+	long innerStart = ns - suffix.GetLength() - sel.GetLength();
+	long innerEnd   = ns - suffix.GetLength();
+	if(innerStart < 0) innerStart = 0;
+	edit.SetSel(innerStart, innerEnd);
+	edit.SetFocus();
+}
+
+// 在当前行行首插入前缀（标题、列表用）
+void CMainFrame::PrefixCurrentLine(const CString& prefix)
+{
+	CLeftView* pLeft = GetLeftView();
+	if(!pLeft) return;
+	CRichEditCtrl& edit = pLeft->GetRichEditCtrl();
+	long s, e; edit.GetSel(s, e);
+	if(s > e){ long t = s; s = e; e = t; }
+	long lineStart = edit.LineIndex(edit.LineFromChar(s));
+	edit.SetSel(lineStart, lineStart);
+	edit.ReplaceSel(prefix, TRUE);
+	edit.SetFocus();
+}
+
+void CMainFrame::OnParaCommand(UINT nID)
+{
+	switch(nID){
+		case ID_PARA_H1: PrefixCurrentLine(_T("# "));  break;
+		case ID_PARA_H2: PrefixCurrentLine(_T("## ")); break;
+		case ID_PARA_H3: PrefixCurrentLine(_T("### ")); break;
+		case ID_PARA_H4: PrefixCurrentLine(_T("#### ")); break;
+		case ID_PARA_UL: PrefixCurrentLine(_T("- "));  break;
+		case ID_PARA_OL: PrefixCurrentLine(_T("1. ")); break;
+	}
+}
+
+void CMainFrame::OnFormatCommand(UINT nID)
+{
+	switch(nID){
+		case ID_FORMAT_BOLD:      WrapSelection(_T("**"), _T("**"));     break;
+		case ID_FORMAT_ITALIC:    WrapSelection(_T("*"),  _T("*"));      break;
+		case ID_FORMAT_UNDERLINE: WrapSelection(_T("<u>"), _T("</u>"));  break;
+		case ID_FORMAT_CODE:      WrapSelection(_T("`"),  _T("`"));      break;
+		case ID_FORMAT_STRIKE:    WrapSelection(_T("~~"), _T("~~"));     break;
+		case ID_FORMAT_LINK:      InsertAtCaret(_T("[链接文字](https://)"), 9, 1); break;
+		case ID_FORMAT_IMAGE:     InsertAtCaret(_T("![图片描述](https://)"), 9, 1); break;
+	}
+}

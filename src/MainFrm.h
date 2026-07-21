@@ -51,6 +51,8 @@ public:
 	afx_msg void OnSize(UINT nType, int cx, int cy);
 	afx_msg void OnSwitch();
 	afx_msg void OnAbout();
+	afx_msg void OnParaCommand(UINT nID);
+	afx_msg void OnFormatCommand(UINT nID);
 };
 
 
