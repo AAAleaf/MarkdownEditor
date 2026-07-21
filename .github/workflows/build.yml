@@ -33,23 +33,57 @@ jobs:
           Write-Host "Using Windows SDK: $sdk"
           "version=$sdk" >> $env:GITHUB_OUTPUT
 
-      # 原工程用 MFC（静态链接），但 GitHub runner 默认没装 MFC 组件，需要补装
-      - name: Install MFC / ATL component into Visual Studio
+      # 安装 MFC / ATL 组件。
+      # 原工程用 MFC（静态链接），但 GitHub runner 默认没装 MFC 库，会报 MSB8041。
+      # 本步骤：先探测是否已有 -> 没有才补装 -> 装完强制校验 -> 失败立即抛错并打印 installer 日志。
+      - name: Ensure MFC / ATL are installed
         shell: pwsh
         run: |
-          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath  = & $vsWhere -latest -property installationPath
+          if (-not $vsPath) { throw "vswhere did not find a Visual Studio install." }
           Write-Host "VS install path: $vsPath"
+
+          # 静态链接 MFC 需要 atlmfc\lib\<arch>\mfcs140.lib
+          function Test-MfcPresent {
+            return (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC\*\atlmfc\lib\x64\mfcs140.lib" -ErrorAction SilentlyContinue |
+                    Select-Object -First 1)
+          }
+
+          $existing = Test-MfcPresent
+          if ($existing) {
+            Write-Host "MFC already present ($($existing.FullName)); skip install."
+            exit 0
+          }
+
+          Write-Host "MFC not found; installing VC.MFC + VC.ATL components..."
+
           $boot = Join-Path $env:RUNNER_TEMP "vs_enterprise.exe"
           Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_enterprise.exe" -OutFile $boot
-          $args = @(
+
+          $log = Join-Path $env:RUNNER_TEMP "vs_install.log"
+          $p = Start-Process -FilePath $boot -ArgumentList @(
             "modify",
             "--installPath", "`"$vsPath`"",
             "--add", "Microsoft.VisualStudio.Component.VC.MFC",
             "--add", "Microsoft.VisualStudio.Component.VC.ATL",
-            "--quiet", "--wait", "--norestart"
-          )
-          $p = Start-Process -FilePath $boot -ArgumentList $args -Wait -PassThru
-          Write-Host "Installer exit code: $($p.ExitCode)"
+            "--quiet", "--wait", "--norestart",
+            "--log", "`"$log`""
+          ) -Wait -PassThru
+
+          if ($p.ExitCode -ne 0) {
+            Write-Host "---- VS installer log (tail) ----"
+            Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 60
+            throw "VS modify failed with exit code $($p.ExitCode)."
+          }
+
+          $after = Test-MfcPresent
+          if (-not $after) {
+            Write-Host "---- VS installer log (tail) ----"
+            Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 60
+            throw "MFC still missing after install (mfcs140.lib not found under $vsPath)."
+          }
+          Write-Host "MFC installed OK: $($after.FullName)"
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
