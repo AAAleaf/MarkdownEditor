@@ -1,0 +1,336 @@
+
+// MarkdownEditorView.cpp : CMarkdownEditorView 类的实现
+//
+
+#include "stdafx.h"
+#include "Util.h"
+#include <string>
+#include <wrl/client.h>
+#include <wrl/event.h>
+#include <shellapi.h>
+#include "WebView2.h"
+// SHARED_HANDLERS 可以在实现预览、缩略图和搜索筛选器句柄的
+// ATL 项目中进行定义，并允许与该项目共享文档代码。
+#ifndef SHARED_HANDLERS
+#include "MarkdownEditor.h"
+#endif
+
+#include "MarkdownEditorDoc.h"
+#include "MarkdownEditorView.h"
+
+#ifdef _DEBUG
+#define new DEBUG_NEW
+#endif
+
+
+// CMarkdownEditorView
+
+IMPLEMENT_DYNCREATE(CMarkdownEditorView, CView)
+
+BEGIN_MESSAGE_MAP(CMarkdownEditorView, CView)
+	ON_WM_SIZE()
+	ON_WM_DESTROY()
+END_MESSAGE_MAP()
+
+// CMarkdownEditorView 构造/析构
+
+CMarkdownEditorView::CMarkdownEditorView()
+{
+	// TODO: 在此处添加构造代码
+	_bFirstNavigate = true;
+	m_bWebViewReady = false;
+	initCSS();
+}
+
+CMarkdownEditorView::~CMarkdownEditorView()
+{
+}
+
+void CMarkdownEditorView::OnDraw(CDC* /*pDC*/)
+{
+	// 预览由 WebView2 负责渲染，这里不需要绘制任何内容
+}
+
+BOOL CMarkdownEditorView::PreCreateWindow(CREATESTRUCT& cs)
+{
+	// TODO: 在此处通过修改
+	//  CREATESTRUCT cs 来修改窗口类或样式
+
+	return CView::PreCreateWindow(cs);
+}
+
+void CMarkdownEditorView::OnInitialUpdate()
+{
+	CView::OnInitialUpdate();
+	// 启动 WebView2（异步），就绪前先缓存 HTML
+	InitializeWebView();
+}
+
+void CMarkdownEditorView::OnSize(UINT nType, int cx, int cy)
+{
+	CView::OnSize(nType, cx, cy);
+	ResizeWebView();
+}
+
+void CMarkdownEditorView::OnDestroy()
+{
+	if (m_controller)
+		m_controller->Close();
+	CView::OnDestroy();
+}
+
+
+// CMarkdownEditorView 诊断
+
+#ifdef _DEBUG
+void CMarkdownEditorView::AssertValid() const
+{
+	CView::AssertValid();
+}
+
+void CMarkdownEditorView::Dump(CDumpContext& dc) const
+{
+	CView::Dump(dc);
+}
+
+CMarkdownEditorDoc* CMarkdownEditorView::GetDocument() const // 非调试版本是内联的
+{
+	ASSERT(m_pDocument->IsKindOf(RUNTIME_CLASS(CMarkdownEditorDoc)));
+	return (CMarkdownEditorDoc*)m_pDocument;
+}
+#endif //_DEBUG
+
+
+// UTF-8 字节串 -> Unicode(CStringW)，用于传给 WebView2 的宽字符接口
+CStringW CMarkdownEditorView::Utf8ToWide(const string& utf8)
+{
+	if (utf8.empty())
+		return CStringW();
+	int n = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), NULL, 0);
+	CStringW w;
+	LPWSTR buf = w.GetBuffer(n);
+	MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), buf, n);
+	w.ReleaseBuffer(n);
+	return w;
+}
+
+// 初始化 WebView2（Edge / Chromium）。使用系统已安装的 WebView2 运行时（Evergreen）。
+void CMarkdownEditorView::InitializeWebView()
+{
+	HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
+		nullptr, nullptr, nullptr,
+		Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
+			[this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
+				if (FAILED(result) || env == nullptr)
+					return result;   // 没有 WebView2 运行时：预览不可用，但不崩溃
+				m_environment = env;
+				env->CreateCoreWebView2Controller(
+					GetSafeHwnd(),
+					Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+						[this](HRESULT result, ICoreWebView2Controller* controller) -> HRESULT {
+							if (FAILED(result) || controller == nullptr)
+								return result;
+							m_controller = controller;
+							controller->get_CoreWebView2(&m_webView);
+
+							// 注入脚本：点击 <a> 链接时把 href 发回 C++
+							// （替代原 CHtmlView 的 onclick 处理，保留“点击链接用默认程序打开”功能）
+							m_webView->AddScriptToExecuteOnDocumentCreated(
+								L"(function(){document.addEventListener('click',function(e){"
+								L"var a=e.target.closest('a');"
+								L"if(a&&a.href){window.chrome.webview.postMessage('link:'+a.href);}"
+								L"});})();",
+								Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
+									[](HRESULT, LPCWSTR) -> HRESULT { return S_OK; }).Get());
+
+							// 接收页面消息 -> 用默认程序打开链接（图片不处理）
+							EventRegistrationToken token = { 0 };
+							m_webView->add_WebMessageReceived(
+								Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+									[this](IUnknown*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+										LPWSTR pwsz = nullptr;
+										if (SUCCEEDED(args->get_WebMessageAsString(&pwsz)) && pwsz) {
+											CStringW msg(pwsz);
+											CoTaskMemFree(pwsz);
+											if (msg.Left(5) == L"link:") {
+												CStringW url = msg.Mid(5);
+												CStringW open = url;
+												if (url.Left(8) == L"file:///")
+													open = url.Mid(8);
+												ShellExecuteW(nullptr, L"open", open.GetString(), nullptr, nullptr, SW_SHOWNORMAL);
+											}
+										}
+										return S_OK;
+									}).Get(),
+								&token);
+
+							m_bWebViewReady = true;
+
+							RECT rc;
+							GetClientRect(&rc);
+							controller->put_Bounds(rc);
+
+							// 渲染之前缓存的 HTML
+							if (!m_pendingHtml.IsEmpty()) {
+								CStringW html = m_pendingHtml;
+								m_pendingHtml.Empty();
+								m_webView->NavigateToString(html);
+							}
+							return S_OK;
+						}).Get());
+				return S_OK;
+			}).Get());
+}
+
+void CMarkdownEditorView::ResizeWebView()
+{
+	if (m_controller) {
+		RECT rc;
+		GetClientRect(&rc);
+		m_controller->put_Bounds(rc);
+	}
+}
+
+void CMarkdownEditorView::NavigateToHtml(const CStringW& html)
+{
+	if (m_bWebViewReady && m_webView) {
+		m_webView->NavigateToString(html);
+	}
+	else {
+		m_pendingHtml = html;   // WebView2 尚未就绪，先缓存，就绪后再渲染
+	}
+}
+
+void CMarkdownEditorView::OnUpdate(CView* /*pSender*/, LPARAM lHint, CObject* /*pHint*/)
+{
+	if(!(lHint & LPARAM_Update))
+		return;
+	const string& str = GetDocument()->getText();	
+	UpdateMd(str);
+	// TODO: 在此添加专用代码和/或调用基类
+}
+
+
+void CMarkdownEditorView::initCSS(){
+	string strUserCss = Util::GetExePath() + "user.css";
+	if(PathFileExists(strUserCss.c_str())){
+		_strCSS = Util::ReadStringFile(strUserCss.c_str());
+	}else{
+		Util::LoadStringRes(IDR_CSS,"CSS",_strCSS); 
+	}
+}
+
+// 取文件所在目录（含末尾分隔符），用于把相对图片路径解析到文档目录下
+static string DirOfPath(const string& filePath)
+{
+	if (filePath.empty()) return "";
+	size_t pos = filePath.find_last_of("/\\");
+	if (pos == string::npos) return "";
+	return filePath.substr(0, pos + 1);
+}
+
+// 把本地路径规范成 file:/// URL（正斜杠）。浏览器从本地文件加载“裸的 C:\xxx 路径（无协议头）”
+// 会按非法 URL 处理并访问异常 → 崩溃；改成 file:///C:/xxx 这种形式即可稳定加载。
+static string ToFileUrl(const string& localPath)
+{
+	// 已经是 URL / 网络图 / 内联图 / 已经是 file:// 则原样返回
+	if (localPath.compare(0, 7, "http://") == 0 ||
+	    localPath.compare(0, 8, "https://") == 0 ||
+	    localPath.compare(0, 5, "data:") == 0 ||
+	    localPath.compare(0, 7, "file://") == 0)
+		return localPath;
+
+	string p = localPath;
+	for (size_t i = 0; i < p.size(); ++i)
+		if (p[i] == '\\') p[i] = '/';   // 反斜杠统一成正斜杠
+
+	if (!p.empty() && p[0] == '/')      // 类 unix 绝对路径：file:///xxx
+		return string("file://") + p;
+	return string("file:///") + p;       // Windows 路径：file:///C:/xxx
+}
+
+string&  replaceImgSrc(string& str, string path)
+{
+	string dir = DirOfPath(path);
+	string old_value = "<img src=\"";
+	for (string::size_type pos(0); pos != string::npos; pos += old_value.length())   {
+		if ((pos = str.find(old_value, pos)) != string::npos){
+			const char* start = str.c_str() + pos + old_value.length();
+			// 网络图 / 内联图 / 已经是 file:// 的，原样保留
+			if (strnicmp(start, "http://", 7) == 0 ||
+			    strnicmp(start, "https://", 8) == 0 ||
+			    strnicmp(start, "data:", 5) == 0 ||
+			    strnicmp(start, "file://", 7) == 0)
+				continue;
+
+			// 取出当前图片路径（到下一个引号为止）
+			string local = start;
+			size_t q = local.find('\"');
+			if (q != string::npos) local = local.substr(0, q);
+
+			// 相对路径才拼文档目录；带盘符的绝对路径（含 ':'）直接用，避免拼出畸形路径
+			if (dir.size() && !local.empty() && local[0] != '/' && local.find(':') == string::npos)
+				local = dir + local;
+
+			string newUrl = ToFileUrl(local);
+			string new_value = "<img src=\"" + newUrl;
+			str.replace(pos, old_value.length(), new_value);
+		}
+		else
+			break;
+	}
+	return   str;
+}
+
+// 把源码里的单行换行转换成 Markdown 硬换行（行尾加两个空格），
+// 这样用户在编辑器里按一次回车，预览里也会换行。
+static string MakeHardLineBreaks(const string& s)
+{
+	string r;
+	size_t i = 0;
+	while (i < s.size()) {
+		size_t nl = s.find('\n', i);
+		if (nl == string::npos) {
+			r.append(s, i, string::npos);
+			break;
+		}
+		// 行的实际结尾（排除 \r）
+		size_t lineEnd = nl;
+		if (lineEnd > i && s[lineEnd - 1] == '\r')
+			lineEnd--;
+		r.append(s, i, lineEnd - i);
+
+		// 判断是否是段落空行（\r\n\r\n 或 \n\n）
+		size_t after = nl + 1;
+		if (after < s.size() && s[after] == '\r')
+			after++;
+		bool paraBreak = (after < s.size() && s[after] == '\n');
+
+		if (!paraBreak)
+			r.append("  "); // Markdown 硬换行
+
+		r.append(s, nl, after - nl); // 复制换行符本身
+		i = after;
+	}
+	return r;
+}
+
+const string HTML_TMPL = "<html><head><meta http-equiv=\"Content-Type\" content=\"text/html; charset=utf-8\" /><style type=\"text/css\">{{0}}</style></head><body>{{1}}</body></html>";
+
+string CMarkdownEditorView::GetMdHtml(const string& str){
+	string strHtml = HTML_TMPL;
+	Util::ReplaceAllStr(strHtml,"{{0}}", _strCSS);
+	// 让编辑器里的单次回车也在预览里换行
+	string md = Util::Text2Md(MakeHardLineBreaks(str));
+	md = replaceImgSrc(md, GetDocument()->getFilePath());
+	Util::ReplaceAllStr(strHtml, "{{1}}", md);
+	// 工程是多字节字符集，内部文本按系统默认编码（中文系统为 GBK）。
+	// 这里先把整体 HTML 转成 UTF-8；WebView2 接收宽字符，渲染前再转成 Unicode，避免中文乱码。
+	return Util::ANSIToUTF8(strHtml.c_str());
+}
+
+void CMarkdownEditorView::UpdateMd(const string& strMd)
+{
+	string strHtml = GetMdHtml(strMd);
+	NavigateToHtml(Utf8ToWide(strHtml));
+}
