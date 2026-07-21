@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 #include <wrl/event.h>
 #include <shellapi.h>
+#include <stdio.h>
 #include "WebView2.h"
 // WRL 的 Callback（用于实现 WebView2 的 COM 事件回调）位于 Microsoft::WRL 命名空间，
 // 须显式引入，否则 Callback<> 会报 “undeclared identifier”，进而级联出一堆 ICoreWebView2 错误。
@@ -212,6 +213,9 @@ void CMarkdownEditorView::ResizeWebView()
 	}
 }
 
+// 前向声明：NavigateToHtml 在 DirOfPath 的下方定义，这里先声明以便使用
+static string DirOfPath(const string& filePath);
+
 void CMarkdownEditorView::NavigateToHtml(const CStringW& html)
 {
 	if (!(m_bWebViewReady && m_webView)) {
@@ -239,15 +243,24 @@ void CMarkdownEditorView::NavigateToHtml(const CStringW& html)
 		outHtml.Replace(L"<head>", L"<head>" + base);
 
 		// 写 UTF-8（带 BOM）到临时文件；写盘失败则退回 NavigateToString
-		try {
-			CFile f(tempPath, CFile::modeCreate | CFile::modeWrite | CFile::typeBinary);
-			const BYTE bom[3] = { 0xEF, 0xBB, 0xBF };
-			f.Write(bom, 3);
-			CT2A utf8(outHtml, CP_UTF8);
-			f.Write(utf8, (UINT)strlen(utf8));
-			f.Close();
+		// 注意：本工程是多字节字符集(MBCS)，CFile 只接受窄路径、CT2A 也按窄字符处理；
+		// 这里直接用宽字符 CRT(_wfopen) + WideCharToMultiByte 写 UTF-8，避开 MBCS 接口限制。
+		FILE* fp = _wfopen(tempPath, L"wb");
+		if (fp) {
+			const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
+			fwrite(bom, 1, 3, fp);
+			int n = outHtml.GetLength();
+			int sz = WideCharToMultiByte(CP_UTF8, 0, outHtml, n, NULL, 0, NULL, NULL);
+			CStringA utf8;
+			WideCharToMultiByte(CP_UTF8, 0, outHtml, n, utf8.GetBuffer(sz), sz, NULL, NULL);
+			utf8.ReleaseBuffer(sz);
+			fwrite((LPCSTR)utf8, 1, sz, fp);
+			fclose(fp);
 		}
-		catch (CFileException* e) { e->Delete(); m_webView->NavigateToString(html); return; }
+		else {
+			m_webView->NavigateToString(html);
+			return;
+		}
 
 		// file:// 导航（反斜杠统一成正斜杠）
 		CStringW url = tempPath;
