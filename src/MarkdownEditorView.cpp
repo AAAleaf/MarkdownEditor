@@ -136,36 +136,31 @@ void CMarkdownEditorView::InitializeWebView()
 							m_controller = controller;
 							controller->get_CoreWebView2(&m_webView);
 
-							// 注入脚本：点击 <a> 链接时把 href 发回 C++
-							// （替代原 CHtmlView 的 onclick 处理，保留“点击链接用默认程序打开”功能）
-							m_webView->AddScriptToExecuteOnDocumentCreated(
-								L"(function(){document.addEventListener('click',function(e){"
-								L"var a=e.target.closest('a');"
-								L"if(a&&a.href){window.chrome.webview.postMessage('link:'+a.href);}"
-								L"});})();",
-								Callback<ICoreWebView2AddScriptToExecuteOnDocumentCreatedCompletedHandler>(
-									[](HRESULT, LPCWSTR) -> HRESULT { return S_OK; }).Get());
-
-							// 接收页面消息 -> 用默认程序打开链接（图片不处理）
-							EventRegistrationToken token = { 0 };
-							m_webView->add_WebMessageReceived(
-								Callback<ICoreWebView2WebMessageReceivedEventHandler>(
-									[this](ICoreWebView2*, ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+							// 点击链接时用默认程序打开（替代原 CHtmlView 的 onclick 处理）。
+							// 用 NavigationStarting 拦截：拦截到 http/https/file 链接就外部打开，并取消 WebView2 自身导航，
+							// 这样预览页面不会被跳转走。
+							// 注意：get_Uri / put_Cancel 是 WebView2 最稳定的接口，跨 SDK 版本通用，
+							// 不依赖 get_WebMessageAsString（新版 SDK 已拆分/移除该成员）。
+							EventRegistrationToken navToken = { 0 };
+							m_webView->add_NavigationStarting(
+								Callback<ICoreWebView2NavigationStartingEventHandler>(
+									[this](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
 										LPWSTR pwsz = nullptr;
-										if (SUCCEEDED(args->get_WebMessageAsString(&pwsz)) && pwsz) {
-											CStringW msg(pwsz);
+										if (SUCCEEDED(args->get_Uri(&pwsz)) && pwsz) {
+											CStringW uri(pwsz);
 											CoTaskMemFree(pwsz);
-											if (msg.Left(5) == L"link:") {
-												CStringW url = msg.Mid(5);
-												CStringW open = url;
-												if (url.Left(8) == L"file:///")
-													open = url.Mid(8);
-												ShellExecuteW(nullptr, L"open", open.GetString(), nullptr, nullptr, SW_SHOWNORMAL);
-											}
+											// 允许初始内容（NavigateToString 的 data: URI）与空 URI，其余一律外部打开并取消
+											if (uri.Left(5) == L"data:" || uri.IsEmpty())
+												return S_OK;
+											CStringW open = uri;
+											if (uri.Left(8) == L"file:///")
+												open = uri.Mid(8);
+											ShellExecuteW(nullptr, L"open", open.GetString(), nullptr, nullptr, SW_SHOWNORMAL);
+											args->put_Cancel(TRUE);
 										}
 										return S_OK;
 									}).Get(),
-								&token);
+								&navToken);
 
 							m_bWebViewReady = true;
 
