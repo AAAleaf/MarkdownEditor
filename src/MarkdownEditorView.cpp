@@ -9,6 +9,8 @@
 #include <wrl/event.h>
 #include <shellapi.h>
 #include <stdio.h>
+#include <vector>
+#include <cctype>
 #include "WebView2.h"
 // WRL 的 Callback（用于实现 WebView2 的 COM 事件回调）位于 Microsoft::WRL 命名空间，
 // 须显式引入，否则 Callback<> 会报 “undeclared identifier”，进而级联出一堆 ICoreWebView2 错误。
@@ -170,8 +172,8 @@ void CMarkdownEditorView::InitializeWebView()
 										if (SUCCEEDED(args->get_Uri(&pwsz)) && pwsz) {
 											CStringW uri(pwsz);
 											CoTaskMemFree(pwsz);
-											// 允许初始内容（NavigateToString 的 data: URI）与空 URI，其余一律外部打开并取消
-											if (uri.Left(5) == L"data:" || uri.IsEmpty())
+											// 允许初始内容（NavigateToString 的空/about:/data: URI），其余一律外部打开并取消
+											if (uri.IsEmpty() || uri.Left(5) == L"data:" || uri.Left(6) == L"about:")
 												return S_OK;
 											CStringW open = uri;
 											if (uri.Left(8) == L"file:///")
@@ -223,55 +225,11 @@ void CMarkdownEditorView::NavigateToHtml(const CStringW& html)
 		return;
 	}
 
-	// 文档已保存（有路径）：把 HTML 写成临时 .html 文件，用 file:// 导航过去。
-	// 原因：NavigateToString 生成的页面是无源(opaque-origin)文档，WebView2 出于安全
-	// 禁止它加载 file:// 本地图片 → 本地图片不显示（云端 https 不受影响）。
-	// 改用 file:// 页面后，本地图片（绝对 file:// 或相对路径）都能同源加载。
-	CStringW docPath = GetDocument() ? Utf8ToWide(GetDocument()->getFilePath()) : L"";
-	if (!docPath.IsEmpty()) {
-		// 临时文件放在 %TEMP% 下固定名，避免堆积
-		WCHAR buf[MAX_PATH] = { 0 };
-		CStringW tempPath = (GetTempPathW(MAX_PATH, buf) && buf[0]) ? CStringW(buf) : CStringW(L".\\");
-		if (tempPath.Right(1) != L"\\") tempPath += L"\\";
-		tempPath += L"MarkdownEditor_preview.html";
-
-		// 注入 <base href="file:///文档目录/">：让相对图片路径解析到文档目录
-		CStringW outHtml = html;
-		string dir = DirOfPath(GetDocument()->getFilePath());
-		for (char& c : dir) if (c == '\\') c = '/';
-		CStringW base = L"<base href=\"file:///" + Utf8ToWide(dir) + L"\">";
-		outHtml.Replace(L"<head>", L"<head>" + base);
-
-		// 写 UTF-8（带 BOM）到临时文件；写盘失败则退回 NavigateToString
-		// 注意：本工程是多字节字符集(MBCS)，CFile 只接受窄路径、CT2A 也按窄字符处理；
-		// 这里直接用宽字符 CRT(_wfopen) + WideCharToMultiByte 写 UTF-8，避开 MBCS 接口限制。
-		FILE* fp = _wfopen(tempPath, L"wb");
-		if (fp) {
-			const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
-			fwrite(bom, 1, 3, fp);
-			int n = outHtml.GetLength();
-			int sz = WideCharToMultiByte(CP_UTF8, 0, outHtml, n, NULL, 0, NULL, NULL);
-			CStringA utf8;
-			WideCharToMultiByte(CP_UTF8, 0, outHtml, n, utf8.GetBuffer(sz), sz, NULL, NULL);
-			utf8.ReleaseBuffer(sz);
-			fwrite((LPCSTR)utf8, 1, sz, fp);
-			fclose(fp);
-		}
-		else {
-			m_webView->NavigateToString(html);
-			return;
-		}
-
-		// file:// 导航（反斜杠统一成正斜杠）
-		CStringW url = tempPath;
-		url.Replace(L'\\', L'/');
-		url = L"file:///" + url;
-		m_tempHtmlPath = tempPath;
-		m_webView->Navigate(url);
-		return;
-	}
-
-	// 文档未保存：无法定位本地图片目录，退回 NavigateToString（文本/云端图可显示）
+	// 直接用 NavigateToString 渲染（opaque-origin 文档）。
+	// 本地图片已在生成 HTML 时内联为 data: URI（见 replaceImgSrc），
+	// 因此不再需要写临时 .html 文件、也不再需要 file:// 导航——
+	// 后者会导致：① file:// 同源策略阻止跨目录加载本地图片；② 初始导航被
+	// NavigationStarting 拦截并 ShellExecute 打开外部浏览器（“强制打开网页”）。
 	m_webView->NavigateToString(html);
 }
 
@@ -303,57 +261,116 @@ static string DirOfPath(const string& filePath)
 	return filePath.substr(0, pos + 1);
 }
 
-// 把本地路径规范成 file:/// URL（正斜杠）。浏览器从本地文件加载“裸的 C:\xxx 路径（无协议头）”
-// 会按非法 URL 处理并访问异常 → 崩溃；改成 file:///C:/xxx 这种形式即可稳定加载。
-static string ToFileUrl(const string& localPath)
+// 把 ANSI(GBK)/UTF-8 路径转成宽字符并用 _wfopen 读取图片字节。
+// 优先按系统默认 ANSI(CP_ACP) 解析（本工程内部文本是 GBK），失败再试 UTF-8，
+// 这样无论 .md 里写的是 GBK 还是 UTF-8 中文路径都能正确读到文件。
+// 单图 > 5MB 不内联（避免每次按键都重编码拖慢预览），交由调用方保留原样。
+static bool OpenLocalImage(const string& local, vector<unsigned char>& out)
 {
-	// 已经是 URL / 网络图 / 内联图 / 已经是 file:// 则原样返回
-	if (localPath.compare(0, 7, "http://") == 0 ||
-	    localPath.compare(0, 8, "https://") == 0 ||
-	    localPath.compare(0, 5, "data:") == 0 ||
-	    localPath.compare(0, 7, "file://") == 0)
-		return localPath;
-
-	string p = localPath;
-	for (size_t i = 0; i < p.size(); ++i)
-		if (p[i] == '\\') p[i] = '/';   // 反斜杠统一成正斜杠
-
-	if (!p.empty() && p[0] == '/')      // 类 unix 绝对路径：file:///xxx
-		return string("file://") + p;
-	return string("file:///") + p;       // Windows 路径：file:///C:/xxx
+	UINT cps[] = { CP_ACP, CP_UTF8 };
+	for (UINT cp : cps) {
+		int n = MultiByteToWideChar(cp, 0, local.c_str(), (int)local.size(), NULL, 0);
+		if (n == 0) continue;
+		CStringW wlocal;
+		LPWSTR buf = wlocal.GetBuffer(n);
+		MultiByteToWideChar(cp, 0, local.c_str(), (int)local.size(), buf, n);
+		wlocal.ReleaseBuffer(n);
+		FILE* fp = _wfopen(wlocal, L"rb");
+		if (!fp) continue;
+		fseek(fp, 0, SEEK_END);
+		long sz = ftell(fp);
+		if (sz > 0 && sz <= 5 * 1024 * 1024) {
+			out.resize((size_t)sz);
+			fseek(fp, 0, SEEK_SET);
+			size_t rd = fread(out.data(), 1, (size_t)sz, fp);
+			fclose(fp);
+			if (rd == (size_t)sz)
+				return true;
+		}
+		else {
+			fclose(fp);
+		}
+	}
+	return false;
 }
 
-string&  replaceImgSrc(string& str, string path)
+// 标准 Base64 编码（无换行），用于把本地图片内联进 HTML
+static string Base64Encode(const unsigned char* data, size_t len)
+{
+	static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	string out;
+	out.reserve(((len + 2) / 3) * 4);
+	for (size_t i = 0; i < len; i += 3) {
+		unsigned int n = (unsigned int)data[i] << 16;
+		if (i + 1 < len) n |= (unsigned int)data[i + 1] << 8;
+		if (i + 2 < len) n |= (unsigned int)data[i + 2];
+		out.push_back(tbl[(n >> 18) & 0x3F]);
+		out.push_back(tbl[(n >> 12) & 0x3F]);
+		out.push_back((i + 1 < len) ? tbl[(n >> 6) & 0x3F] : '=');
+		out.push_back((i + 2 < len) ? tbl[n & 0x3F] : '=');
+	}
+	return out;
+}
+
+// 根据扩展名推断 MIME（用于 data: URI 的媒体类型）
+static string MimeFromPath(const string& p)
+{
+	size_t dot = p.find_last_of(".");
+	if (dot == string::npos) return "image/png";
+	string ext = p.substr(dot + 1);
+	for (char& c : ext) c = (char)tolower((unsigned char)c);
+	if (ext == "jpg" || ext == "jpeg") return "image/jpeg";
+	if (ext == "gif") return "image/gif";
+	if (ext == "bmp") return "image/bmp";
+	if (ext == "webp") return "image/webp";
+	if (ext == "svg") return "image/svg+xml";
+	return "image/png";
+}
+
+// 把本地图片内联成 data: URI，彻底绕开 file:// 同源限制。
+// 这样无论文档是否保存、无论临时页用何种方式渲染，本地图片都能正常显示，
+// 也不会触发“打开 md 时被强制用浏览器打开网页”的问题（见 NavigateToHtml）。
+string& replaceImgSrc(string& str, string path)
 {
 	string dir = DirOfPath(path);
 	string old_value = "<img src=\"";
-	for (string::size_type pos(0); pos != string::npos; pos += old_value.length())   {
-		if ((pos = str.find(old_value, pos)) != string::npos){
+	for (string::size_type pos(0); pos != string::npos; pos += old_value.length()) {
+		if ((pos = str.find(old_value, pos)) != string::npos) {
 			const char* start = str.c_str() + pos + old_value.length();
-			// 网络图 / 内联图 / 已经是 file:// 的，原样保留
-			if (strnicmp(start, "http://", 7) == 0 ||
-			    strnicmp(start, "https://", 8) == 0 ||
-			    strnicmp(start, "data:", 5) == 0 ||
-			    strnicmp(start, "file://", 7) == 0)
-				continue;
-
 			// 取出当前图片路径（到下一个引号为止）
 			string local = start;
 			size_t q = local.find('\"');
 			if (q != string::npos) local = local.substr(0, q);
 
-			// 相对路径才拼文档目录；带盘符的绝对路径（含 ':'）直接用，避免拼出畸形路径
-			if (dir.size() && !local.empty() && local[0] != '/' && local.find(':') == string::npos)
-				local = dir + local;
+			// 网络图 / 内联图原样保留
+			if (strnicmp(local.c_str(), "http://", 7) == 0 ||
+				strnicmp(local.c_str(), "https://", 8) == 0 ||
+				strnicmp(local.c_str(), "data:", 5) == 0)
+				continue;
 
-			string newUrl = ToFileUrl(local);
-			string new_value = "<img src=\"" + newUrl;
-			str.replace(pos, old_value.length(), new_value);
+			// 解析成本地文件路径
+			string file = local;
+			if (strnicmp(local.c_str(), "file:///", 8) == 0)
+				file = local.substr(8);
+			else if (strnicmp(local.c_str(), "file://", 7) == 0)
+				file = local.substr(7);
+			else if (dir.size() && !file.empty() && file[0] != '/' && file.find(':') == string::npos)
+				file = dir + file;   // 相对路径拼文档目录
+			for (char& c : file) if (c == '\\') c = '/';  // 反斜杠统一
+
+			// 内联：读文件 -> Base64 -> data: URI
+			vector<unsigned char> bytes;
+			if (OpenLocalImage(file, bytes)) {
+				string dataUri = string("data:") + MimeFromPath(file) + ";base64," + Base64Encode(bytes.data(), bytes.size());
+				string new_value = "<img src=\"" + dataUri;
+				str.replace(pos, old_value.length(), new_value);
+			}
+			// 读不到（文件不存在/过大/编码不匹配）则保留原样，最多显示成坏图，绝不崩溃
 		}
 		else
 			break;
 	}
-	return   str;
+	return str;
 }
 
 // 把源码里的单行换行转换成 Markdown 硬换行（行尾加两个空格），
