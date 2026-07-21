@@ -210,7 +210,8 @@ void CMainFrame::WrapSelection(const CString& prefix, const CString& suffix)
 	CRichEditCtrl& edit = pLeft->GetRichEditCtrl();
 	
 	long s0, e0; edit.GetSel(s0, e0);
-	CString sel = edit.GetTextRange(s0, e0);
+	CString sel; edit.GetTextRange((int)s0, (int)e0, sel);
+
 
 	CString ins = prefix + sel + suffix;
 	edit.ReplaceSel(ins, TRUE);
