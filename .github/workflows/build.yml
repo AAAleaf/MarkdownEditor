@@ -17,7 +17,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest   # GitHub 托管的 Windows Server + Visual Studio 2022 (v143)
+    runs-on: windows-latest   # GitHub 托管的 Windows Server + 最新 Visual Studio（工具集跟随 DefaultPlatformToolset）
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,10 +44,15 @@ jobs:
           if (-not $vsPath) { throw "vswhere did not find a Visual Studio install." }
           Write-Host "VS install path: $vsPath"
 
-          # 静态链接 MFC 需要 atlmfc\lib\<arch>\mfcs140.lib
+          # 静态链接 MFC 需要 <最新MSVC>\atlmfc\lib\x64\mfcs140.lib
+          # 注意：必须检查「最新」MSVC 目录，因为它才是 DefaultPlatformToolset 实际使用的工具集，
+          # 否则可能命中旧的、不带 MFC 的 MSVC 版本而误判「已安装」。
+          $msvcRoot = "$vsPath\VC\Tools\MSVC"
           function Test-MfcPresent {
-            return (Get-ChildItem -Path "$vsPath\VC\Tools\MSVC\*\atlmfc\lib\x64\mfcs140.lib" -ErrorAction SilentlyContinue |
-                    Select-Object -First 1)
+            $latest = Get-ChildItem $msvcRoot -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+            if (-not $latest) { return $null }
+            $lib = Join-Path $latest.FullName "atlmfc\lib\x64\mfcs140.lib"
+            if (Test-Path $lib) { return (Get-Item $lib) } else { return $null }
           }
 
           $existing = Test-MfcPresent
@@ -89,10 +94,13 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       # 关键覆盖项：
-      #   /p:PlatformToolset=v143       原工程是 v141（VS2017），runner 上已无法安装，改用 v143
+      #   工具集不再硬编码：vcxproj 已改为 $(DefaultPlatformToolset)，跟随 runner 实际安装的 VS
+      #   （VS2022=v143 / VS2025=v150），从而与上面安装的「latest」MFC 组件版本天然一致，
+      #   避免之前「v143 工具集 + v150 MFC」错配导致的 MSB8041。
       #   /p:WindowsTargetPlatformVersion  用上面探测到的 SDK，覆盖锁死的 10.0.17134.0
       - name: Build (${{ github.event.inputs.platform || 'x64' }})
-        run: msbuild src/MarkdownEditor.sln /p:Configuration=Release /p:Platform=${{ github.event.inputs.platform || 'x64' }} /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=${{ steps.sdk.outputs.version }} /m
+        shell: cmd
+        run: msbuild src/MarkdownEditor.sln /p:Configuration=Release /p:Platform=${{ github.event.inputs.platform || 'x64' }} /p:WindowsTargetPlatformVersion=${{ steps.sdk.outputs.version }} /m
 
       - name: Show result
         shell: pwsh
