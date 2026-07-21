@@ -1,0 +1,73 @@
+name: Build Windows EXE
+
+# 触发：推送到 master/main 自动构建；也可手动触发，手动时可选择目标平台
+on:
+  push:
+    branches: [ master, main ]
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform (x64 优先；若 x64 构建失败，可改为 Win32 重试)"
+        required: true
+        default: "x64"
+        type: choice
+        options:
+          - x64
+          - Win32
+
+jobs:
+  build:
+    runs-on: windows-latest   # GitHub 托管的 Windows Server + Visual Studio 2022 (v143)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 原工程锁定了 10.0.17134.0（runner 上不存在），这里探测实际安装的 Windows SDK 版本
+      - name: Detect installed Windows SDK
+        id: sdk
+        shell: pwsh
+        run: |
+          $inc = "C:\Program Files (x86)\Windows Kits\10\Include"
+          $sdk = (Get-ChildItem $inc -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1).Name
+          if (-not $sdk) { $sdk = "10.0.22621.0" }
+          Write-Host "Using Windows SDK: $sdk"
+          "version=$sdk" >> $env:GITHUB_OUTPUT
+
+      # 原工程用 MFC（静态链接），但 GitHub runner 默认没装 MFC 组件，需要补装
+      - name: Install MFC / ATL component into Visual Studio
+        shell: pwsh
+        run: |
+          $vsPath = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Write-Host "VS install path: $vsPath"
+          $boot = Join-Path $env:RUNNER_TEMP "vs_enterprise.exe"
+          Invoke-WebRequest -Uri "https://aka.ms/vs/17/release/vs_enterprise.exe" -OutFile $boot
+          $args = @(
+            "modify",
+            "--installPath", "`"$vsPath`"",
+            "--add", "Microsoft.VisualStudio.Component.VC.MFC",
+            "--add", "Microsoft.VisualStudio.Component.VC.ATL",
+            "--quiet", "--wait", "--norestart"
+          )
+          $p = Start-Process -FilePath $boot -ArgumentList $args -Wait -PassThru
+          Write-Host "Installer exit code: $($p.ExitCode)"
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # 关键覆盖项：
+      #   /p:PlatformToolset=v143       原工程是 v141（VS2017），runner 上已无法安装，改用 v143
+      #   /p:WindowsTargetPlatformVersion  用上面探测到的 SDK，覆盖锁死的 10.0.17134.0
+      - name: Build (${{ github.event.inputs.platform || 'x64' }})
+        run: msbuild src/MarkdownEditor.sln /p:Configuration=Release /p:Platform=${{ github.event.inputs.platform || 'x64' }} /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=${{ steps.sdk.outputs.version }} /m
+
+      - name: Show result
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem src -Recurse -Filter MarkdownEditor.exe | Select-Object -First 1
+          if ($exe) { Write-Host "Built: $($exe.FullName) ($([math]::Round($exe.Length/1KB)) KB)" } else { Write-Error "MarkdownEditor.exe not found!" }
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarkdownEditor-${{ github.event.inputs.platform || 'x64' }}
+          path: src/**/MarkdownEditor.exe
