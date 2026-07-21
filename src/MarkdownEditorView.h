@@ -24,6 +24,7 @@ private:
 	ComPtr<ICoreWebView2>            m_webView;
 	bool m_bWebViewReady;          // WebView2 控制器是否就绪
 	CStringW m_pendingHtml;        // 就绪前缓存待渲染的 HTML
+	CStringW m_tempHtmlPath;       // 渲染用的临时 .html 文件路径（file:// 导航用）
 
 	void InitializeWebView();
 	void ResizeWebView();

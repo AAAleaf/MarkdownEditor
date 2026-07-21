@@ -79,6 +79,11 @@ void CMarkdownEditorView::OnDestroy()
 {
 	if (m_controller)
 		m_controller->Close();
+	// 清理渲染用的临时 HTML 文件
+	if (!m_tempHtmlPath.IsEmpty()) {
+		DeleteFileW(m_tempHtmlPath);
+		m_tempHtmlPath.Empty();
+	}
 	CView::OnDestroy();
 }
 
@@ -209,12 +214,52 @@ void CMarkdownEditorView::ResizeWebView()
 
 void CMarkdownEditorView::NavigateToHtml(const CStringW& html)
 {
-	if (m_bWebViewReady && m_webView) {
-		m_webView->NavigateToString(html);
-	}
-	else {
+	if (!(m_bWebViewReady && m_webView)) {
 		m_pendingHtml = html;   // WebView2 尚未就绪，先缓存，就绪后再渲染
+		return;
 	}
+
+	// 文档已保存（有路径）：把 HTML 写成临时 .html 文件，用 file:// 导航过去。
+	// 原因：NavigateToString 生成的页面是无源(opaque-origin)文档，WebView2 出于安全
+	// 禁止它加载 file:// 本地图片 → 本地图片不显示（云端 https 不受影响）。
+	// 改用 file:// 页面后，本地图片（绝对 file:// 或相对路径）都能同源加载。
+	CStringW docPath = GetDocument() ? Utf8ToWide(GetDocument()->getFilePath()) : L"";
+	if (!docPath.IsEmpty()) {
+		// 临时文件放在 %TEMP% 下固定名，避免堆积
+		WCHAR buf[MAX_PATH] = { 0 };
+		CStringW tempPath = (GetTempPathW(MAX_PATH, buf) && buf[0]) ? CStringW(buf) : CStringW(L".\\");
+		if (tempPath.Right(1) != L"\\") tempPath += L"\\";
+		tempPath += L"MarkdownEditor_preview.html";
+
+		// 注入 <base href="file:///文档目录/">：让相对图片路径解析到文档目录
+		CStringW outHtml = html;
+		string dir = DirOfPath(GetDocument()->getFilePath());
+		for (char& c : dir) if (c == '\\') c = '/';
+		CStringW base = L"<base href=\"file:///" + Utf8ToWide(dir) + L"\">";
+		outHtml.Replace(L"<head>", L"<head>" + base);
+
+		// 写 UTF-8（带 BOM）到临时文件；写盘失败则退回 NavigateToString
+		try {
+			CFile f(tempPath, CFile::modeCreate | CFile::modeWrite | CFile::typeBinary);
+			const BYTE bom[3] = { 0xEF, 0xBB, 0xBF };
+			f.Write(bom, 3);
+			CT2A utf8(outHtml, CP_UTF8);
+			f.Write(utf8, (UINT)strlen(utf8));
+			f.Close();
+		}
+		catch (CFileException* e) { e->Delete(); m_webView->NavigateToString(html); return; }
+
+		// file:// 导航（反斜杠统一成正斜杠）
+		CStringW url = tempPath;
+		url.Replace(L'\\', L'/');
+		url = L"file:///" + url;
+		m_tempHtmlPath = tempPath;
+		m_webView->Navigate(url);
+		return;
+	}
+
+	// 文档未保存：无法定位本地图片目录，退回 NavigateToString（文本/云端图可显示）
+	m_webView->NavigateToString(html);
 }
 
 void CMarkdownEditorView::OnUpdate(CView* /*pSender*/, LPARAM lHint, CObject* /*pHint*/)
