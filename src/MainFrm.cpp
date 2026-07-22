@@ -14,16 +14,6 @@
 #define new DEBUG_NEW
 #endif
 
-// 兜底定义：若 resource.h 中未定义 H5/H6（旧版或未随本文件一起提交推送），
-// 这里保证 C++ 编译通过。一旦 resource.h 正确定义了它们，#ifndef 会跳过，不冲突。
-// 注意：菜单项与快捷键要真正出现，仍需把 resource.h 与 .rc 一起提交。
-#ifndef ID_PARA_H5
-#define ID_PARA_H5 32793
-#endif
-#ifndef ID_PARA_H6
-#define ID_PARA_H6 32794
-#endif
-
 #define IS_VIEWER_KEY  "isViewer"
 void saveViewer(bool enable) //把是否为阅读器模式保存到注册表,方便下次打开程序时自动使用之前的状态
 {
@@ -45,7 +35,6 @@ IMPLEMENT_DYNCREATE(CMainFrame, CFrameWnd)
 		ON_COMMAND(IDM_SWITCH, &CMainFrame::OnSwitch)
 		ON_COMMAND(IDM_ABOUT, &CMainFrame::OnAbout)
 		ON_COMMAND_RANGE(ID_PARA_H1, ID_PARA_OL, &CMainFrame::OnParaCommand)
-		ON_COMMAND_RANGE(ID_PARA_H5, ID_PARA_H6, &CMainFrame::OnParaCommand)
 		ON_COMMAND_RANGE(ID_FORMAT_BOLD, ID_FORMAT_IMAGE, &CMainFrame::OnFormatCommand)
 	END_MESSAGE_MAP()
 
@@ -219,8 +208,8 @@ void CMainFrame::WrapSelection(const CString& prefix, const CString& suffix)
 	CLeftView* pLeft = GetLeftView();
 	if(!pLeft) return;
 	CRichEditCtrl& edit = pLeft->GetRichEditCtrl();
-	long s0, e0; edit.GetSel(s0, e0);
-	CString sel; edit.GetTextRange((int)s0, (int)e0, sel);
+	CString sel;
+	edit.GetSelText(sel);
 	CString ins = prefix + sel + suffix;
 	edit.ReplaceSel(ins, TRUE);
 	long ns, ne; edit.GetSel(ns, ne); // ns == ne == 插入文本末尾
@@ -232,33 +221,14 @@ void CMainFrame::WrapSelection(const CString& prefix, const CString& suffix)
 }
 
 // 在当前行行首插入前缀（标题、列表用）
-void CMainFrame::PrefixCurrentLine(const CString& prefix, bool bAddBlankLineBefore)
+void CMainFrame::PrefixCurrentLine(const CString& prefix)
 {
 	CLeftView* pLeft = GetLeftView();
 	if(!pLeft) return;
 	CRichEditCtrl& edit = pLeft->GetRichEditCtrl();
 	long s, e; edit.GetSel(s, e);
 	if(s > e){ long t = s; s = e; e = t; }
-	long nLine = edit.LineFromChar(s);
-	long lineStart = edit.LineIndex(nLine);
-
-	// 列表类命令：如果上一行非空，先插一个空行，避免 Markdown 把新列表合并进上一段/列表
-	if (bAddBlankLineBefore && nLine > 0) {
-		long prevStart = edit.LineIndex(nLine - 1);
-		long prevEnd = lineStart; // 当前行行首即上一行结尾
-		if (prevEnd > prevStart) {
-			CString prevText;
-			edit.GetTextRange((int)prevStart, (int)prevEnd, prevText);
-			prevText.Remove(_T('\r'));
-			prevText.Remove(_T('\n'));
-			if (!prevText.IsEmpty()) {
-				edit.SetSel(lineStart, lineStart);
-				edit.ReplaceSel(_T("\r\n"), TRUE);
-				lineStart += 2;
-			}
-		}
-	}
-
+	long lineStart = edit.LineIndex(edit.LineFromChar(s));
 	edit.SetSel(lineStart, lineStart);
 	edit.ReplaceSel(prefix, TRUE);
 	edit.SetFocus();
@@ -267,14 +237,12 @@ void CMainFrame::PrefixCurrentLine(const CString& prefix, bool bAddBlankLineBefo
 void CMainFrame::OnParaCommand(UINT nID)
 {
 	switch(nID){
-		case ID_PARA_H1: PrefixCurrentLine(_T("# "));             break;
-		case ID_PARA_H2: PrefixCurrentLine(_T("## "));            break;
-		case ID_PARA_H3: PrefixCurrentLine(_T("### "));           break;
-		case ID_PARA_H4: PrefixCurrentLine(_T("#### "));          break;
-		case ID_PARA_H5: PrefixCurrentLine(_T("##### "));         break;
-		case ID_PARA_H6: PrefixCurrentLine(_T("###### "));        break;
-		case ID_PARA_UL: PrefixCurrentLine(_T("- "),  true);      break;
-		case ID_PARA_OL: PrefixCurrentLine(_T("1. "), true);      break;
+		case ID_PARA_H1: PrefixCurrentLine(_T("# "));  break;
+		case ID_PARA_H2: PrefixCurrentLine(_T("## ")); break;
+		case ID_PARA_H3: PrefixCurrentLine(_T("### ")); break;
+		case ID_PARA_H4: PrefixCurrentLine(_T("#### ")); break;
+		case ID_PARA_UL: PrefixCurrentLine(_T("- "));  break;
+		case ID_PARA_OL: PrefixCurrentLine(_T("1. ")); break;
 	}
 }
 
@@ -287,8 +255,6 @@ void CMainFrame::OnFormatCommand(UINT nID)
 		case ID_FORMAT_CODE:      WrapSelection(_T("`"),  _T("`"));      break;
 		case ID_FORMAT_STRIKE:    WrapSelection(_T("~~"), _T("~~"));     break;
 		case ID_FORMAT_LINK:      InsertAtCaret(_T("[链接文字](https://)"), 9, 1); break;
-		// 用 data: URI 内联占位图：不触发 IE 任何文件/网络加载，彻底避免“插入图片即崩溃”
-		// 用户把整段 data:... 替换成自己的相对/绝对图片路径即可；replaceImgSrc 会把它解析到文档所在目录
-		case ID_FORMAT_IMAGE:     InsertAtCaret(_T("![图片描述](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAAAYCAIAAADF1mwTAAAAPUlEQVR42u3YQQ0AIAwAselEE+omAhF7YYKEbGlyBvq9WDtbF0MAeapdAAAAAAAAAAAAAAAAAAAvAK7Ety4snOSzESSKyAAAAABJRU5ErkJggg==)"), 0, 0); break;
+		case ID_FORMAT_IMAGE:     InsertAtCaret(_T("![图片描述](https://)"), 9, 1); break;
 	}
 }
