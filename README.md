@@ -1,14 +1,15 @@
 MarkdownEditor
 ==============
 
-Lightweight markdown editor/viewer written by c++ , for windows user. It's a green software, only one exe file, and need not any other modules.
+本软件从jijinggang仓库拷贝而来，采用c++ , 单文件，没有其他的附带
 
+截图如下
 ![ScreenSnap](ScreenSnap.jpg)
 
-Download
+下载
 --------
 
-<https://github.com/jijinggang/MarkdownEditor/blob/master/download/MarkdownEditor.zip?raw=true>
+https://github.com/AAAleaf/MarkdownEditor/tree/master/download
 
 Usage
 -----
@@ -19,12 +20,4 @@ License
 MarkdownEditor is licensed under the MIT License.
 A copy of the MIT License is included in this file.
 
-This software's dependencies:
-<https://github.com/vmg/sundown>
-
-Other dependencies and licenses:
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+其他的懒得写了，增加了一些段落和格式以及快捷键，都是让AI写的，我自己打包测试，后续再看看能不能增加其他功能
