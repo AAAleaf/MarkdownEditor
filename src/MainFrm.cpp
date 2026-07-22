@@ -14,6 +14,16 @@
 #define new DEBUG_NEW
 #endif
 
+// 兜底定义：若 resource.h 中未定义 H5/H6（旧版或未随本文件一起提交推送），
+// 这里保证 C++ 编译通过。一旦 resource.h 正确定义了它们，#ifndef 会跳过，不冲突。
+// 注意：菜单项与快捷键要真正出现，仍需把 resource.h 与 .rc 一起提交。
+#ifndef ID_PARA_H5
+#define ID_PARA_H5 32793
+#endif
+#ifndef ID_PARA_H6
+#define ID_PARA_H6 32794
+#endif
+
 #define IS_VIEWER_KEY  "isViewer"
 void saveViewer(bool enable) //把是否为阅读器模式保存到注册表,方便下次打开程序时自动使用之前的状态
 {
