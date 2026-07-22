@@ -35,6 +35,7 @@ IMPLEMENT_DYNCREATE(CMainFrame, CFrameWnd)
 		ON_COMMAND(IDM_SWITCH, &CMainFrame::OnSwitch)
 		ON_COMMAND(IDM_ABOUT, &CMainFrame::OnAbout)
 		ON_COMMAND_RANGE(ID_PARA_H1, ID_PARA_OL, &CMainFrame::OnParaCommand)
+		ON_COMMAND_RANGE(ID_PARA_H5, ID_PARA_H6, &CMainFrame::OnParaCommand)
 		ON_COMMAND_RANGE(ID_FORMAT_BOLD, ID_FORMAT_IMAGE, &CMainFrame::OnFormatCommand)
 	END_MESSAGE_MAP()
 
@@ -260,6 +261,8 @@ void CMainFrame::OnParaCommand(UINT nID)
 		case ID_PARA_H2: PrefixCurrentLine(_T("## "));            break;
 		case ID_PARA_H3: PrefixCurrentLine(_T("### "));           break;
 		case ID_PARA_H4: PrefixCurrentLine(_T("#### "));          break;
+		case ID_PARA_H5: PrefixCurrentLine(_T("##### "));         break;
+		case ID_PARA_H6: PrefixCurrentLine(_T("###### "));        break;
 		case ID_PARA_UL: PrefixCurrentLine(_T("- "),  true);      break;
 		case ID_PARA_OL: PrefixCurrentLine(_T("1. "), true);      break;
 	}
